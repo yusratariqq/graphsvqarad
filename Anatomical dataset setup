@@ -1,0 +1,20 @@
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("raddar/nodules-in-chest-xrays-jsrt")
+
+print("Path to dataset files:", path)
+
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("raddar/tuberculosis-chest-xrays-montgomery")
+
+print("Path to dataset files:", path)
+
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("farhanhaikhan/unet-lung-segmentation-weights-for-chest-x-rays")
+
+print("Path to dataset files:", path)  #for using pre trained weights
