@@ -1,0 +1,108 @@
+import os
+import torch
+import numpy as np
+from PIL import Image
+from torchvision import transforms
+from torchvision.models.detection import FasterRCNN
+from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
+from torchvision.models.detection.rpn import AnchorGenerator
+
+# ==========================================================
+# 1. SETUP
+# ==========================================================
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# paths
+ckpt_path = "/kaggle/input/objectdetection/other/default/1/resnet50_1110.pth"
+img_dir = "/kaggle/input/vqa-rad-visual-question-answering-radiology/VQA_RAD Image Folder"
+
+# transform
+transform = transforms.ToTensor()
+
+# 2. LOAD BARLOW CHECKPOINT + DETECTOR
+def load_barlow_state(ckpt_path):
+    ck = torch.load(ckpt_path, map_location="cpu")
+    if "state_dict" in ck:
+        sd = ck["state_dict"]
+    else:
+        sd = ck
+    new_sd = {}
+    for k, v in sd.items():
+        k2 = k
+        for p in ("module.encoder_q.", "module.", "encoder_q.", "backbone."):
+            if k2.startswith(p):
+                k2 = k2[len(p):]
+        if k2.startswith("fc") or k2.startswith("head"):
+            continue
+        new_sd[k2] = v
+    return new_sd
+
+def build_backbone_with_barlow(ckpt_path, trainable_layers=3):
+    backbone = resnet_fpn_backbone("resnet50", weights=None, trainable_layers=trainable_layers)
+    barlow_sd = load_barlow_state(ckpt_path)
+    body_state = backbone.body.state_dict()
+    mapped = {k: barlow_sd[k] for k in body_state.keys() if k in barlow_sd and body_state[k].shape == barlow_sd[k].shape}
+    body_state.update(mapped)
+    backbone.body.load_state_dict(body_state, strict=False)
+    backbone.out_channels = 256
+    return backbone
+
+def build_detector(ckpt_path, num_classes=2):
+    backbone = build_backbone_with_barlow(ckpt_path)
+    anchor_generator = AnchorGenerator(
+        sizes=((32,), (64,), (128,), (256,), (512,)),
+        aspect_ratios=((0.5, 1.0, 2.0),) * 5
+    )
+    return FasterRCNN(backbone, num_classes=num_classes, rpn_anchor_generator=anchor_generator)
+
+model = build_detector(ckpt_path, num_classes=2).to(device)
+model.eval()
+print("Detector ready on:", device)
+
+# 3. ROI FEATURE EXTRACTION 
+def extract_roi_features(img_path, topk=30):
+    """
+    Extract top-K region proposals and ROI features for one image.
+    Returns boxes, scores, roi_feats.
+    """
+    img = Image.open(img_path).convert("RGB")
+    img_tensor = transform(img).to(device)
+
+    with torch.no_grad():
+        preds = model([img_tensor])
+        boxes = preds[0]['boxes'][:topk]
+        scores = preds[0]['scores'][:topk]
+
+        # FPN features
+        img_list, _ = model.transform([img_tensor])
+        features = model.backbone(img_list.tensors)
+
+        # ROI Align → pooled features
+        pooled = model.roi_heads.box_roi_pool(features, [boxes.to(device)], [img_tensor.shape[-2:]])
+        pooled = model.roi_heads.box_head(pooled)  # [K, 1024]
+
+    return boxes.cpu(), scores.cpu(), pooled.cpu()
+
+# 4. LOOP OVER ALL IMAGES IN VQA-RAD
+img_files = [f for f in os.listdir(img_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+print(f"Found {len(img_files)} images in dataset.")
+
+all_features = {}
+for i, fname in enumerate(img_files):
+    img_path = os.path.join(img_dir, fname)
+    try:
+        boxes, scores, roi_feats = extract_roi_features(img_path, topk=30)
+        all_features[fname] = {
+            "boxes": boxes.numpy(),
+            "scores": scores.numpy(),
+            "features": roi_feats.numpy()
+        }
+    except Exception as e:
+        print(f"Skipping {fname} due to error: {e}")
+    
+    if (i+1) % 50 == 0:
+        print(f"Processed {i+1}/{len(img_files)} images")
+
+# 5. SAVE ROI FEATURES
+torch.save(all_features, "vqa_rad_roi_features.pt")
+print("✅ Saved ROI features for all images to vqa_rad_roi_features.pt")
