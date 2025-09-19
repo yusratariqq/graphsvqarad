@@ -1,0 +1,87 @@
+import torch
+import numpy as np
+import pickle  
+
+# FUNCTIONS TO BUILD SPATIAL GRAPH
+def get_box_center(box):
+    x1, y1, x2, y2 = box
+    return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+def determine_direction(box1, box2):
+    cx1, cy1 = get_box_center(box1)
+    cx2, cy2 = get_box_center(box2)
+    dx = cx2 - cx1
+    dy = cy2 - cy1
+    if dx == 0 and dy == 0:
+        return None
+    angle = np.degrees(np.arctan2(dy, dx)) % 360
+    if 337.5 <= angle < 360 or 0 <= angle < 22.5:
+        return "right"
+    elif 22.5 <= angle < 67.5:
+        return "top-right"
+    elif 67.5 <= angle < 112.5:
+        return "top"
+    elif 112.5 <= angle < 157.5:
+        return "top-left"
+    elif 157.5 <= angle < 202.5:
+        return "left"
+    elif 202.5 <= angle < 247.5:
+        return "bottom-left"
+    elif 247.5 <= angle < 292.5:
+        return "bottom"
+    elif 292.5 <= angle < 337.5:
+        return "bottom-right"
+
+def compute_overlap_type(box1, box2):
+    xA = max(box1[0], box2[0])
+    yA = max(box1[1], box2[1])
+    xB = min(box1[2], box2[2])
+    yB = min(box1[3], box2[3])
+    inter_area = max(0, xB-xA) * max(0, yB-yA)
+    box1_area = (box1[2]-box1[0])*(box1[3]-box1[1])
+    box2_area = (box2[2]-box2[0])*(box2[3]-box2[1])
+    if inter_area == 0:
+        return None
+    elif inter_area == box1_area:
+        return "inside"
+    elif inter_area == box2_area:
+        return "cover"
+    else:
+        return "overlap"
+
+def build_spatial_graph_11(boxes):
+    M = len(boxes)
+    relations = ["inside", "cover", "overlap", "right", "top-right", "top", 
+                 "top-left", "left", "bottom-left", "bottom", "bottom-right"]
+    adjacency_matrices = {r: np.zeros((M, M)) for r in relations}
+    for i in range(M):
+        for j in range(M):
+            if i == j:
+                continue
+            ov_type = compute_overlap_type(boxes[i], boxes[j])
+            if ov_type:
+                adjacency_matrices[ov_type][i, j] = 1
+            else:
+                direction = determine_direction(boxes[i], boxes[j])
+                if direction:
+                    adjacency_matrices[direction][i, j] = 1
+    return adjacency_matrices
+
+# LOAD ROI FEATURES
+roi_features_path = "/kaggle/working/vqa_rad_roi_features.pt"
+
+all_features = torch.load(roi_features_path, map_location="cpu", pickle_module=pickle)
+print(f"Loaded ROI features for {len(all_features)} images")
+
+# BUILD SPATIAL GRAPHS FOR ALL IMAGES
+spatial_graphs = {}
+
+for img_name, data in all_features.items():
+    boxes = data["boxes"]
+    adjacency = build_spatial_graph_11(boxes)
+    spatial_graphs[img_name] = adjacency
+
+# SAVE SPATIAL GRAPHS
+save_path = "/kaggle/working/vqa_rad_spatial_graphs.pt"
+torch.save(spatial_graphs, save_path)
+print(f"✅ Saved spatial graphs for all images at {save_path}")
