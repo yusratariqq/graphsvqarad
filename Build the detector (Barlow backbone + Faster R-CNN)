@@ -1,0 +1,42 @@
+import torch
+from torchvision.models.detection import FasterRCNN
+from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
+from torchvision.models.detection.rpn import AnchorGenerator
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def load_barlow_state(ckpt_path):
+    ck = torch.load(ckpt_path, map_location="cpu")
+    if "state_dict" in ck: sd = ck["state_dict"]
+    else: sd = ck
+    new_sd = {}
+    for k,v in sd.items():
+        k2 = k
+        for p in ("module.encoder_q.","module.","encoder_q.","backbone."):
+            if k2.startswith(p): k2 = k2[len(p):]
+        if k2.startswith("fc") or k2.startswith("head"):
+            continue
+        new_sd[k2] = v
+    return new_sd
+
+def build_backbone_with_barlow(ckpt_path, trainable_layers=3):
+    backbone = resnet_fpn_backbone("resnet50", pretrained=False, trainable_layers=trainable_layers)
+    barlow_sd = load_barlow_state(ckpt_path)
+    body_state = backbone.body.state_dict()
+    mapped = {k:barlow_sd[k] for k in body_state.keys() if k in barlow_sd and body_state[k].shape == barlow_sd[k].shape}
+    body_state.update(mapped)
+    backbone.body.load_state_dict(body_state, strict=False)
+    backbone.out_channels = 256
+    return backbone
+
+def build_detector(ckpt_path, num_classes=2):
+    backbone = build_backbone_with_barlow(ckpt_path)
+    anchor_generator = AnchorGenerator(
+    sizes=((32,), (64,), (128,), (256,), (512,)),
+    aspect_ratios=((0.5,1.0,2.0),) * 5
+)
+    return FasterRCNN(backbone, num_classes=num_classes, rpn_anchor_generator=anchor_generator)
+
+model = build_detector(ckpt_path, num_classes=2).to(device)
+model.eval()
+print("Model ready on:", device)
