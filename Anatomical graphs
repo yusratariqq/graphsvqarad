@@ -1,0 +1,99 @@
+import os
+import torch
+from torchvision import transforms
+from PIL import Image
+import numpy as np
+from tqdm import tqdm
+
+# --------------------------
+# Paths
+# --------------------------
+dataset_paths = [
+    '/kaggle/input/nodules-in-chest-xrays-jsrt/images',
+    '/kaggle/input/tuberculosis-chest-xrays-montgomery/images'
+]
+
+# Pretrained U-Net for lung segmentation
+# You need to define a compatible UNet class and load weights
+weights_path = '/kaggle/input/unet-lung-segmentation-weights-for-chest-x-rays/cxr_reg_weights.best.hdf5'
+
+# --------------------------
+# Transform
+# --------------------------
+transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),
+])
+
+# --------------------------
+# Dummy UNet loader (replace with actual model)
+# --------------------------
+import torch.nn as nn
+class DummyUNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # This is just a placeholder
+    def forward(self, x):
+        # Return fake lung mask
+        return torch.rand(x.shape[0], 1, x.shape[2], x.shape[3])
+
+lung_model = DummyUNet()  # replace with your U-Net and load weights
+lung_model.eval()
+
+# --------------------------
+# Generate anatomical graphs
+# --------------------------
+all_graphs = {}
+
+for dataset in dataset_paths:
+    for img_file in tqdm(os.listdir(dataset)):
+        if not img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+            continue
+
+        img_path = os.path.join(dataset, img_file)
+        img = Image.open(img_path).convert('L')
+        img_tensor = transform(img).unsqueeze(0)  # [1, 1, H, W]
+
+        # --- Get anatomical masks ---
+        with torch.no_grad():
+            lung_mask = lung_model(img_tensor)  # [1,1,H,W]
+            # For demo: dummy heart/clavicles masks
+            heart_mask = torch.rand_like(lung_mask)
+            clavicle_mask = torch.rand_like(lung_mask)
+
+        # --- Node features ---
+        # Mean pooling over mask for each region
+        nodes = {
+            'left_lung': lung_mask[0,0].mean().unsqueeze(0),
+            'right_lung': lung_mask[0,0].mean().unsqueeze(0),
+            'heart': heart_mask[0,0].mean().unsqueeze(0),
+            'clavicles': clavicle_mask[0,0].mean().unsqueeze(0),
+        }
+
+        # --- Spatial edges (adjacency)
+        # Simple example: fully connected for demo
+        edges = []
+        node_names = list(nodes.keys())
+        for i in range(len(node_names)):
+            for j in range(i+1, len(node_names)):
+                edges.append((node_names[i], node_names[j]))
+
+        # --- Semantic edges (dummy knowledge)
+        semantic_edges = [
+            ('left_lung', 'pleural_effusion'),
+            ('right_lung', 'pneumothorax'),
+            ('heart', 'cardiomegaly')
+        ]
+
+        # --- Save graph for this image ---
+        all_graphs[img_file] = {
+            'nodes': nodes,
+            'spatial_edges': edges,
+            'semantic_edges': semantic_edges
+        }
+
+# --------------------------
+# Save all anatomical graphs
+# --------------------------
+torch.save(all_graphs, 'anatomical_graphs.pt')
+print("✅ All anatomical graphs saved as 'anatomical_graphs.pt'")
