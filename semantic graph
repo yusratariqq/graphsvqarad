@@ -1,0 +1,35 @@
+import torch
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+import pickle
+
+
+# LOAD ROI FEATURES
+roi_features_path = "/kaggle/working/vqa_rad_roi_features.pt"
+all_features = torch.load(roi_features_path, map_location="cpu", pickle_module=pickle)
+print(f"Loaded ROI features for {len(all_features)} images")
+
+
+# BUILD SEMANTIC GRAPHS
+semantic_graphs = {}
+
+for img_name, data in all_features.items():
+    roi_features = data["features"]  # shape: [num_boxes, feature_dim]
+    
+    # Compute cosine similarity
+    sim_matrix = cosine_similarity(roi_features)
+    
+    # Threshold to create adjacency matrix (binary)
+    threshold = 0.7
+    adjacency = (sim_matrix > threshold).astype(int)
+    
+    # Remove self-loops
+    np.fill_diagonal(adjacency, 0)
+    
+    semantic_graphs[img_name] = adjacency
+
+
+# SAVE SEMANTIC GRAPHS
+save_path = "/kaggle/working/vqa_rad_semantic_graphs.pt"
+torch.save(semantic_graphs, save_path)
+print(f"✅ Saved semantic graphs for all images at {save_path}")
